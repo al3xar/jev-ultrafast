@@ -74,7 +74,8 @@ def client(monkeypatch):
 def test_run_goal_returns_run_id_and_done_status(client):
     response = client.post(
         "/run_goal",
-        json={"url": "https://range.test/login", "goal": "Log in as admin", "session_id": "campaign-1"},
+        json={"url": "https://range.test/login", "goal": "Log in as admin", "session_id": "campaign-1",
+              "scope_allowlist": ["range.test"]},
     )
     assert response.status_code == 200
     body = response.json()
@@ -87,7 +88,9 @@ def test_run_goal_returns_run_id_and_done_status(client):
 
 def test_run_goal_stores_history_and_final_snapshot(client):
     body = client.post(
-        "/run_goal", json={"url": "https://range.test/login", "goal": "Log in as admin", "session_id": "campaign-1"}
+        "/run_goal",
+        json={"url": "https://range.test/login", "goal": "Log in as admin", "session_id": "campaign-1",
+              "scope_allowlist": ["range.test"]},
     ).json()
     run_id = body["run_id"]
     evidence = client.get(f"/get_evidence/{run_id}")
@@ -103,7 +106,9 @@ def test_run_goal_stores_history_and_final_snapshot(client):
 def test_run_goal_blocked_status_is_reported(client, monkeypatch):
     monkeypatch.setattr(svc, "Agent", lambda url, goal, **kw: fake_agent(status_after_run="blocked"))
     body = client.post(
-        "/run_goal", json={"url": "https://range.test/", "goal": "Open file upload", "session_id": "campaign-2"}
+        "/run_goal",
+        json={"url": "https://range.test/", "goal": "Open file upload", "session_id": "campaign-2",
+              "scope_allowlist": ["range.test"]},
     ).json()
     assert body["status"] == "blocked"
     assert body["run_id"].startswith("jev-")
@@ -126,7 +131,8 @@ def test_agent_factory_receives_url_and_goal(client, monkeypatch):
         return fake_agent()
 
     monkeypatch.setattr(svc, "Agent", spy)
-    client.post("/run_goal", json={"url": "https://range.test/x", "goal": "Goal text", "session_id": "c"})
+    client.post("/run_goal", json={"url": "https://range.test/x", "goal": "Goal text", "session_id": "c",
+                                   "scope_allowlist": ["range.test"]})
     assert seen == {"url": "https://range.test/x", "goal": "Goal text"}
 
 
@@ -141,7 +147,9 @@ def test_run_goal_stores_state_and_error_when_loop_raises_mid_run(client, monkey
     agent.run = Mock(return_value=broken_run())
     monkeypatch.setattr(svc, "Agent", lambda url, goal, **kw: agent)
     body = client.post(
-        "/run_goal", json={"url": "https://range.test/d", "goal": "Change the dropdown", "session_id": "campaign-3"}
+        "/run_goal",
+        json={"url": "https://range.test/d", "goal": "Change the dropdown", "session_id": "campaign-3",
+              "scope_allowlist": ["range.test"]},
     ).json()
     assert body["run_id"].startswith("jev-")
     assert body["status"] == "ready"

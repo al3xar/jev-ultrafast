@@ -5,10 +5,11 @@ import time
 import uuid
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from jev_ultrafast import model
 from jev_ultrafast import service as _service
+from jev_ultrafast.scope import ScopeGuard, clamp_budget
 
 # T-1: in-memory evidence store. Session persistence across runs arrives in T-4.
 _RUNS: dict[str, dict] = {}
@@ -22,6 +23,12 @@ class RunGoalRequest(BaseModel):
     url: str
     goal: str
     session_id: str
+    # T-5: scope is mandatory for a run in the range — a run without an
+    # allowlist is refused, not defaulted, so a missing field can never mean
+    # "navigate anywhere".
+    scope_allowlist: list[str] = Field(min_length=1)
+    max_actions: int | None = None
+    max_decisions: int | None = None
 
 
 class ExtractSurfaceRequest(BaseModel):
@@ -39,18 +46,61 @@ def create_app() -> FastAPI:
 
     @app.post("/run_goal")
     def run_goal(body: RunGoalRequest):
+        # T-5: scope + budget are enforced before the run starts. An empty or
+        # missing scope_allowlist is a 422 at the request layer (above); an
+        # unclamped budget is clamped to Jev's hard limits (60/120).
+        guard = ScopeGuard(body.scope_allowlist)
+        max_actions, max_decisions = clamp_budget(body.max_actions, body.max_decisions)
         run_id = "jev-" + uuid.uuid4().hex
+        if (offending := guard.is_out_of_scope(body.url)) is not None:
+            # The requested URL itself is out of scope: the run is refused before
+            # a browser even opens, reported as BLOCKED / out_of_scope.
+            record = {
+                "run_id": run_id,
+                "session_id": body.session_id,
+                "url": body.url,
+                "goal": body.goal,
+                "status": "blocked",
+                "error": None,
+                "elapsed_ms": 0,
+                "history": [],
+                "snapshot": {"url": body.url, "title": None, "text": None, "elements": []},
+                "scope_blocked_url": body.url,
+                "scope_offending": offending,
+                "max_actions": max_actions,
+                "max_decisions": max_decisions,
+                "created_at": time.time(),
+            }
+            with _LOCK:
+                _RUNS[run_id] = record
+            return {
+                "run_id": run_id,
+                "status": "blocked",
+                "blocked_reason": "out_of_scope",
+                "blocked_url": body.url,
+                "session_id": body.session_id,
+                "elapsed_ms": 0,
+                "max_actions": max_actions,
+                "max_decisions": max_decisions,
+            }
         try:
             agent = _service.Agent(body.url, body.goal)
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f"Browser unavailable: {exc}") from exc
         final_state, error = None, None
+        scope_blocked_url = None
         try:
             # The run loop ends on done/blocked. A budget ValueError or an interrupted
             # dropdown (RuntimeError) mid-loop leaves the agent with the last executed
             # action recorded; the run is stored with its error, never retried.
+            # T-5: every observed page URL is checked against the allowlist — a CLICK
+            # that navigates out of scope aborts the run at that point.
             for state in agent.run():
                 final_state = state
+                page_url = (state.get("page") or {}).get("url") or state.get("url") or ""
+                if (offending := guard.is_out_of_scope(page_url)) is not None:
+                    scope_blocked_url = page_url
+                    break
         except Exception as exc:
             error = str(exc)
         finally:
@@ -73,17 +123,29 @@ def create_app() -> FastAPI:
                 "text": page.get("text"),
                 "elements": _elements(final_state),
             },
+            "max_actions": max_actions,
+            "max_decisions": max_decisions,
             "created_at": time.time(),
         }
+        if scope_blocked_url:
+            record["scope_blocked_url"] = scope_blocked_url
+            record["scope_offending"] = guard.is_out_of_scope(scope_blocked_url)
+            record["status"] = "blocked"
         with _LOCK:
             _RUNS[run_id] = record
-        return {
+        response = {
             "run_id": run_id,
             "status": record["status"],
             "session_id": body.session_id,
             "elapsed_ms": record["elapsed_ms"],
             "error": error,
+            "max_actions": max_actions,
+            "max_decisions": max_decisions,
         }
+        if scope_blocked_url:
+            response["blocked_reason"] = "out_of_scope"
+            response["blocked_url"] = scope_blocked_url
+        return response
 
     @app.post("/extract_surface")
     def extract_surface(body: ExtractSurfaceRequest):

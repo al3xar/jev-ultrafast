@@ -12,6 +12,7 @@ store and are fetched separately via get_evidence / web_get_evidence.
 
 import hashlib
 import json
+import re
 import uuid
 from enum import Enum
 
@@ -160,10 +161,17 @@ def compress_run(state: dict) -> SubgoalResult:
     snapshot = state.get("snapshot") or {}
     goal = state.get("goal") or state.get("url") or "run"
 
-    status, reason = _map_status(jev_status, error, history)
+    # T-5: the scope guard is authoritative — a run aborted for out-of-scope
+    # navigation is BLOCKED with reason "out_of_scope" regardless of whatever
+    # status/error the agent happened to carry at the abort point.
+    scope_blocked_url = state.get("scope_blocked_url")
+    if scope_blocked_url:
+        status, reason = SubgoalStatus.BLOCKED, "out_of_scope"
+    else:
+        status, reason = _map_status(jev_status, error, history)
     extracted = Extracted(
         reflected_text=_reflected_text(snapshot),
-        final_url=snapshot.get("url") or (history[-1].get("url") if history else None),
+        final_url=scope_blocked_url or snapshot.get("url") or (history[-1].get("url") if history else None),
         forms_seen=_forms_seen(state),
     )
     return SubgoalResult(
@@ -179,3 +187,46 @@ def compress_run(state: dict) -> SubgoalResult:
         evidence_hash=_evidence_hash(state, status),
         blocked_reason=reason,
     )
+
+
+def verify(state: dict, verify_spec: dict | None) -> bool | None:
+    """Evaluate the subgoal's verify condition against the final snapshot (T-3).
+
+    Runs INDEPENDENTLY of the run status: a run can be DONE and still fail its verify
+    (the planner decides with `verified`, not with `status`). Returns True/False, or
+    None when no verification is requested (kind `none` or absent spec).
+    """
+    if not verify_spec:
+        return None
+    kind = verify_spec.get("kind")
+    if kind == "none":
+        return None
+    snapshot = state.get("snapshot") or {}
+    if kind == "text_present":
+        text = " ".join((snapshot.get("text") or "").split()).lower()
+        return (verify_spec.get("value") or "").lower() in text
+    if kind == "url_matches":
+        url = snapshot.get("url") or (state.get("history") or [{}])[-1].get("url") or ""
+        pattern = verify_spec.get("value") or ""
+        try:
+            return re.search(pattern, url) is not None
+        except re.error:
+            # A malformed regex is a spec error, not a satisfied condition.
+            return False
+    if kind == "element_state":
+        elements = snapshot.get("elements") or []
+        by_index = {str(e.get("index")): e for e in elements}
+        element = by_index.get(str(verify_spec.get("index", "")))
+        if element is None:
+            return False
+        for attr in ("value", "checked", "selected"):
+            if attr in verify_spec:
+                expected = verify_spec[attr]
+                actual = element.get(attr)
+                if expected is None:
+                    if actual is not None:
+                        return False
+                elif str(actual) != str(expected):
+                    return False
+        return True
+    raise ValueError(f"Unsupported verify kind: {kind!r}")
