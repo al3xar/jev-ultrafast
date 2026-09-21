@@ -50,7 +50,10 @@ class SubgoalResult(BaseModel):
 
     `trace` is deliberately NOT a field here: it lives in the evidence store and is
     requested separately (get_evidence / web_get_evidence) so the big model is never
-    drowned in DOM. `verified` is pre-reserved as null; the verify block (T-3) fills it.
+    drowned in DOM. `verified` is filled by the independent verify block (T-3): it is
+    null only when no verify spec is requested, otherwise True/False regardless of
+    `status` — a DONE run can carry verified=False (the planner decides on verified,
+    not on status).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -145,13 +148,18 @@ def _evidence_hash(state: dict, status: SubgoalStatus) -> str:
     return "sha256:" + hashlib.sha256(blob).hexdigest()
 
 
-def compress_run(state: dict) -> SubgoalResult:
+def compress_run(state: dict, verify_spec: dict | None = None) -> SubgoalResult:
     """Translate a Jev run state/record into the compressed subgoal response contract.
 
     `state` is the record stored by the service's /run_goal (T-1): run_id, session_id,
     url, goal, Jev status, error, elapsed_ms, history, decisions, snapshot, created_at.
     A bare Agent snapshot (status/page/history/decisions/elapsed_ms, no run_id) is also
     accepted: the run_id is synthesized in that case.
+
+    `verify_spec` (T-3) is the subgoal's verify condition from the planner —
+    {kind: text_present|url_matches|element_state|none, ...}. It is evaluated against
+    the final snapshot by `verify`, independently of the run status, and the outcome
+    lands in `SubgoalResult.verified`. Absent or kind `none` leaves verified=None.
     """
     run_id = state.get("run_id") or "jev-" + uuid.uuid4().hex
     jev_status = state.get("status") or ""
@@ -177,6 +185,7 @@ def compress_run(state: dict) -> SubgoalResult:
     return SubgoalResult(
         run_id=run_id,
         status=status,
+        verified=verify(state, verify_spec),
         summary=_summary(status, goal, history, extracted, reason),
         extracted=extracted,
         budget=Budget(
