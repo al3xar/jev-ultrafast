@@ -11,6 +11,7 @@ this module only calls it.
 | POST | `/run_goal` | `{url, goal, session_id, scope_allowlist, reuse_session?, max_actions?, max_decisions?, screenshots?}` | `{run_id, status, session_id, elapsed_ms, error, max_actions, max_decisions}` |
 | POST | `/extract_surface` | `{url, session_id}` | one indexed snapshot: `{run_id:null, session_id, status, url, title, text, elements}` |
 | GET | `/get_evidence/{run_id}` | — | full stored run: history + final snapshot + budget fields + `screenshots` + `evidence_hash` |
+| GET | `/health` | — | readiness (T-14): `{status: ready|degraded, browser_harness, chrome, active_sessions}` — the K8s readiness endpoint; reports service availability, NOT a live browser |
 
 - `run_goal` runs the agent loop to `done` / `blocked` (or the budget). It stores
   `history` + the final `page` snapshot under a generated `run_id` (`jev-<uuid>`).
