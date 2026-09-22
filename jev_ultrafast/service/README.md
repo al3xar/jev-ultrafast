@@ -8,7 +8,7 @@ this module only calls it.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/run_goal` | `{url, goal, session_id}` | `{run_id, status, session_id, elapsed_ms, error}` |
+| POST | `/run_goal` | `{url, goal, session_id, scope_allowlist, reuse_session?, max_actions?, max_decisions?}` | `{run_id, status, session_id, elapsed_ms, error, max_actions, max_decisions}` |
 | POST | `/extract_surface` | `{url, session_id}` | one indexed snapshot: `{run_id:null, session_id, status, url, title, text, elements}` |
 | GET | `/get_evidence/{run_id}` | — | full stored run: history + final snapshot + budget fields |
 
@@ -16,8 +16,20 @@ this module only calls it.
   `history` + the final `page` snapshot under a generated `run_id` (`jev-<uuid>`).
 - `extract_surface` takes **one** observation and returns the indexed element table
   without ever starting the loop — cheap recon (1 TypeSafe call, or 0).
-- `session_id` is carried through the contract now; persistent browser context
-  between `run_goal` calls is a later task (T-4). Here it is a plumbed field only.
+- **Persistent session browser (T-4).** A real pentest is login → set security
+  level → attack module. Each run now shares **one** Chrome profile per
+  `session_id` (cookies / CSRF / storage) so consecutive `run_goal` calls resume an
+  authenticated state instead of re-opening a clean Chrome every time.
+  - `reuse_session` (default `true`): keep this session's browser context alive
+    across runs. The same `--user-data-dir` + same CDP-bound daemon persist between
+    runs; idle contexts expire after a TTL (default 30 min, background sweeper).
+  - `reuse_session=false`: a **clean, disposable** context — a fresh profile dir,
+    torn down immediately after the run (nothing carried over).
+  - Access is **serialized per `session_id`** (a global browser-routing lock, since
+    `browser_harness` routes CDP through one process-global daemon name): only one
+    run may be bound to a session at a time.
+  - `scope_allowlist` is mandatory (T-5); the scope guard runs before the browser
+    opens and every observed page URL is checked during the loop.
 
 ## Running locally
 

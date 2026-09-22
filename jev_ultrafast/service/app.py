@@ -1,5 +1,6 @@
 """FastAPI app: run_goal / extract_surface / get_evidence around jev_ultrafast.Agent."""
 
+import contextlib
 import threading
 import time
 import uuid
@@ -29,6 +30,10 @@ class RunGoalRequest(BaseModel):
     scope_allowlist: list[str] = Field(min_length=1)
     max_actions: int | None = None
     max_decisions: int | None = None
+    # T-4: keep this session's browser (cookies/CSRF/profile) alive across runs.
+    # When true the run reuses the session's existing Chrome profile; when false it
+    # uses a throwaway context that is torn down after the run.
+    reuse_session: bool = True
 
 
 class ExtractSurfaceRequest(BaseModel):
@@ -42,7 +47,22 @@ def _elements(state: dict) -> list:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Jev Ultrafast service")
+    # T-4: per-session browser contexts. The registry is created eagerly so it exists
+    # for every request (the lifespan only manages the background sweeper and the
+    # end-of-life teardown).
+    session_registry = _service.sessions.SessionRegistry()
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.session_registry = session_registry
+        session_registry.start_sweeper()
+        try:
+            yield
+        finally:
+            session_registry.shutdown()
+
+    app = FastAPI(title="Jev Ultrafast service", lifespan=lifespan)
+    app.state.session_registry = session_registry
 
     @app.post("/run_goal")
     def run_goal(body: RunGoalRequest):
@@ -83,30 +103,44 @@ def create_app() -> FastAPI:
                 "max_actions": max_actions,
                 "max_decisions": max_decisions,
             }
-        try:
-            agent = _service.Agent(body.url, body.goal)
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"Browser unavailable: {exc}") from exc
-        final_state, error = None, None
+        registry = app.state.session_registry
+        final_state: dict | None = None
+        error = None
         scope_blocked_url = None
-        try:
-            # The run loop ends on done/blocked. A budget ValueError or an interrupted
-            # dropdown (RuntimeError) mid-loop leaves the agent with the last executed
-            # action recorded; the run is stored with its error, never retried.
-            # T-5: every observed page URL is checked against the allowlist — a CLICK
-            # that navigates out of scope aborts the run at that point.
-            for state in agent.run():
-                final_state = state
-                page_url = (state.get("page") or {}).get("url") or state.get("url") or ""
-                if (offending := guard.is_out_of_scope(page_url)) is not None:
-                    scope_blocked_url = page_url
-                    break
-        except Exception as exc:
-            error = str(exc)
-        finally:
-            agent.close()
-        if final_state is None:
-            final_state = agent.snapshot()
+
+        def _execute():
+            """Open the agent against this session's browser and run the loop.
+
+            Runs inside ``registry.run`` so the per-session Chrome (same profile
+            across runs) is bound to the CDP routing for the whole run and access
+            to the session is serialized.
+            """
+            nonlocal final_state, error, scope_blocked_url
+            try:
+                agent = _service.Agent(body.url, body.goal)
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"Browser unavailable: {exc}") from exc
+            try:
+                # The run loop ends on done/blocked. A budget ValueError or an
+                # interrupted dropdown (RuntimeError) mid-loop leaves the agent with
+                # the last executed action recorded; the run is stored with its error,
+                # never retried.
+                # T-5: every observed page URL is checked against the allowlist — a
+                # CLICK that navigates out of scope aborts the run at that point.
+                for state in agent.run():
+                    final_state = state
+                    page_url = (state.get("page") or {}).get("url") or state.get("url") or ""
+                    if guard.is_out_of_scope(page_url) is not None:
+                        scope_blocked_url = page_url
+                        break
+            except Exception as exc:
+                error = str(exc)
+            finally:
+                agent.close()
+            if final_state is None:
+                final_state = agent.snapshot()
+
+        registry.run(body.session_id, reuse=body.reuse_session, fn=_execute)
         page = final_state.get("page") or {}
         record = {
             "run_id": run_id,
