@@ -127,13 +127,15 @@ def test_agent_factory_receives_url_and_goal(client, monkeypatch):
     seen = {}
 
     def spy(url, goal, **kw):
+        seen.update(kw)
         seen["url"], seen["goal"] = url, goal
         return fake_agent()
 
     monkeypatch.setattr(svc, "Agent", spy)
     client.post("/run_goal", json={"url": "https://range.test/x", "goal": "Goal text", "session_id": "c",
                                    "scope_allowlist": ["range.test"]})
-    assert seen == {"url": "https://range.test/x", "goal": "Goal text"}
+    # T-4b: the factory is also told whether the run wants per-step screenshots.
+    assert seen == {"url": "https://range.test/x", "goal": "Goal text", "screenshots": False}
 
 
 def test_run_goal_stores_state_and_error_when_loop_raises_mid_run(client, monkeypatch):

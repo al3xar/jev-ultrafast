@@ -8,9 +8,9 @@ this module only calls it.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/run_goal` | `{url, goal, session_id, scope_allowlist, reuse_session?, max_actions?, max_decisions?}` | `{run_id, status, session_id, elapsed_ms, error, max_actions, max_decisions}` |
+| POST | `/run_goal` | `{url, goal, session_id, scope_allowlist, reuse_session?, max_actions?, max_decisions?, screenshots?}` | `{run_id, status, session_id, elapsed_ms, error, max_actions, max_decisions}` |
 | POST | `/extract_surface` | `{url, session_id}` | one indexed snapshot: `{run_id:null, session_id, status, url, title, text, elements}` |
-| GET | `/get_evidence/{run_id}` | — | full stored run: history + final snapshot + budget fields |
+| GET | `/get_evidence/{run_id}` | — | full stored run: history + final snapshot + budget fields + `screenshots` + `evidence_hash` |
 
 - `run_goal` runs the agent loop to `done` / `blocked` (or the budget). It stores
   `history` + the final `page` snapshot under a generated `run_id` (`jev-<uuid>`).
@@ -30,6 +30,14 @@ this module only calls it.
     run may be bound to a session at a time.
   - `scope_allowlist` is mandatory (T-5); the scope guard runs before the browser
     opens and every observed page URL is checked during the loop.
+- **Evidence record (T-4b).** Every stored run carries two extra fields that
+  `web_get_evidence` (NyxStrike, T-9) passes through transparently:
+  - `screenshots`: a base64 JPEG **per observed step**, only when the run asked
+    for it (`screenshots: true` in the request; default `false` → `[]`, no
+    captures inside the loop).
+  - `evidence_hash`: the T-2 tamper-evident digest (`compress_run` over the
+    stored record: run identity, goal, status, ordered action history) — the
+    link into the NyxStrike evidence chain.
 
 ## Running locally
 

@@ -107,8 +107,11 @@ def real_service(monkeypatch, http_origin):
     class ScriptedAgent:
         """Drives the real Browser with fixed actions per goal; never calls a model."""
 
-        def __init__(self, url, goal):
+        def __init__(self, url, goal, *, screenshots=False):
             self.goal = goal.strip()
+            # Mirrors the real Agent's screenshots kwarg (T-4b); the scripted run
+            # never captures, so the evidence record's screenshots list stays empty.
+            self.screenshots = screenshots
             self.browser = Browser(url)  # REAL browser bound to the session's Chrome
 
         def run(self):

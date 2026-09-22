@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from jev_ultrafast import model
 from jev_ultrafast import service as _service
+from jev_ultrafast.contract import compress_run
 from jev_ultrafast.scope import ScopeGuard, clamp_budget
 
 # T-1: in-memory evidence store. Session persistence across runs arrives in T-4.
@@ -34,6 +35,9 @@ class RunGoalRequest(BaseModel):
     # When true the run reuses the session's existing Chrome profile; when false it
     # uses a throwaway context that is torn down after the run.
     reuse_session: bool = True
+    # T-4b: capture a JPEG per observed step inside the loop and store it in the
+    # evidence record. Off by default — structured state only, no vision in the loop.
+    screenshots: bool = False
 
 
 class ExtractSurfaceRequest(BaseModel):
@@ -91,6 +95,8 @@ def create_app() -> FastAPI:
                 "max_decisions": max_decisions,
                 "created_at": time.time(),
             }
+            record["screenshots"] = []
+            record["evidence_hash"] = compress_run(record).evidence_hash
             with _LOCK:
                 _RUNS[run_id] = record
             return {
@@ -107,6 +113,7 @@ def create_app() -> FastAPI:
         final_state: dict | None = None
         error = None
         scope_blocked_url = None
+        screenshots: list = []
 
         def _execute():
             """Open the agent against this session's browser and run the loop.
@@ -117,7 +124,8 @@ def create_app() -> FastAPI:
             """
             nonlocal final_state, error, scope_blocked_url
             try:
-                agent = _service.Agent(body.url, body.goal)
+                # T-4b: per-step JPEG capture only when the run requested it.
+                agent = _service.Agent(body.url, body.goal, screenshots=body.screenshots)
             except Exception as exc:
                 raise HTTPException(status_code=503, detail=f"Browser unavailable: {exc}") from exc
             try:
@@ -129,6 +137,13 @@ def create_app() -> FastAPI:
                 # CLICK that navigates out of scope aborts the run at that point.
                 for state in agent.run():
                     final_state = state
+                    if body.screenshots:
+                        # T-4b: one base64 JPEG per observed step, ordered. The agent
+                        # only attaches page["screenshot"] when it was built with
+                        # screenshots=True, so this stays empty otherwise.
+                        shot = (state.get("page") or {}).get("screenshot")
+                        if shot:
+                            screenshots.append(shot)
                     page_url = (state.get("page") or {}).get("url") or state.get("url") or ""
                     if guard.is_out_of_scope(page_url) is not None:
                         scope_blocked_url = page_url
@@ -160,7 +175,13 @@ def create_app() -> FastAPI:
             "max_actions": max_actions,
             "max_decisions": max_decisions,
             "created_at": time.time(),
+            # T-4b: per-step JPEG captures (empty unless the run requested them).
+            "screenshots": screenshots,
         }
+        # T-4b: the T-2 tamper-evident digest over the stored record, coherent with
+        # compress_run recomputed on the same record (screenshots are not part of the
+        # digest — the hash covers run identity, goal, status, and the action history).
+        record["evidence_hash"] = compress_run(record).evidence_hash
         if scope_blocked_url:
             record["scope_blocked_url"] = scope_blocked_url
             record["scope_offending"] = guard.is_out_of_scope(scope_blocked_url)
