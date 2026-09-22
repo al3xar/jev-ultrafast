@@ -68,6 +68,30 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Jev Ultrafast service", lifespan=lifespan)
     app.state.session_registry = session_registry
 
+    @app.get("/health")
+    def health():
+        """Readiness for the K8s pod probe.
+
+        Reports SERVICE availability, not a live browser: Chrome is launched
+        on demand per session_id (T-4) and `browser-harness --doctor` exits
+        non-zero while idle, so the probe must not require a running Chrome.
+        200/ready means the service can accept runs; 200/degraded means the
+        harness package or the Chrome binary is missing (runs will 503).
+        """
+        import importlib.util
+        import shutil
+
+        harness = importlib.util.find_spec("browser_harness") is not None
+        chrome = shutil.which("google-chrome") is not None
+        active = len(session_registry.active_sessions())
+        return {
+            "status": "ready" if (harness and chrome) else "degraded",
+            "service": "jev-ultrafast",
+            "browser_harness": harness,
+            "chrome": chrome,
+            "active_sessions": active,
+        }
+
     @app.post("/run_goal")
     def run_goal(body: RunGoalRequest):
         # T-5: scope + budget are enforced before the run starts. An empty or
