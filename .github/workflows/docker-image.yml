@@ -1,0 +1,75 @@
+name: Docker image
+
+# Builds the Jev service container (Dockerfile: headless Chrome + browser-harness
+# + the FastAPI jev-service) and pushes it to the GitHub Container Registry (GHCR):
+# ghcr.io/<owner>/jev-ultrafast. Authenticated with the built-in GITHUB_TOKEN —
+# NO external registry credentials for a public repo.
+#
+# Consumed by the Hades cyber-range: NyxStrike's web_interaction toolspec proxies
+# to this service via JEV_URL, and the hermes-deepagents-langfuse chart runs it as
+# the `hades-jev` pod (Service hades-jev:8765).
+#
+# Make it pullable by the cyber-range (ONE-TIME, after the first successful run):
+#   GitHub → repo → Packages → jev-ultrafast → Package settings →
+#   Change visibility → Public   (otherwise the dmz node needs a GHCR pull secret).
+#
+# Single-platform linux/amd64 on purpose: google-chrome-stable ships only an
+# amd64 .deb, so an arm64 build would fail at the Chrome install step.
+#
+# PRIVATE-REPO NOTE: for a private repo GITHUB_TOKEN cannot push to GHCR; set a
+# repo secret GHCR_PAT (classic token, write:packages scope) — the login step
+# falls back to it. Public repos need nothing extra.
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"     # e.g. 0.1.0
+      - "v[0-9]+.[0-9]+.[0-9]+"    # e.g. v0.1.0
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    name: Build & push to GHCR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

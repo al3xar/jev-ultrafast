@@ -2,9 +2,10 @@
 #
 # Build:  docker build -t ghcr.io/al3xar/jev-ultrafast:sha-<git-short> .
 #
-# PUBLISHING IS GATED (TFM human gate, T-14): do NOT push this image until
-# Al3xar authorizes. The chart (hermes-agent-charts/.../values-hades.yaml)
-# pins the exact tag/digest at deploy time — no :latest floats.
+# PUBLISHED via .github/workflows/docker-image.yml on every push to main
+# (GHCR: ghcr.io/al3xar/jev-ultrafast, tags sha-<short> + latest). Make the
+# GHCR package Public once so the cyber-range can pull it. google-chrome-stable
+# is amd64-only, so this image builds linux/amd64 (the CI enforces that).
 #
 # RUNTIME CONTRACT (verified against the service code):
 #   * the jev-service entrypoint (jev_ultrafast.service.main) binds
