@@ -42,14 +42,14 @@ RUN apt-get update \
       libxkbcommon0 \
       libxrandr2 \
       xdg-utils \
- && mkdir -p /tmp/apt-keys \
- && wget -qO /tmp/apt-keys/google.gpg https://dl.google.com/linux/linux_signing_key.pub \
- && apt-key add /tmp/apt-keys/google.gpg \
- && echo "deb [arch=amd64 signed-by=/tmp/apt-keys/google.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+ && install -d -m 0755 /etc/apt/keyrings \
+ && wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
+      | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg \
+ && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
       > /etc/apt/sources.list.d/google-chrome.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends google-chrome-stable \
- && rm -rf /var/lib/apt/lists/* /tmp/apt-keys /tmp/*
+ && rm -rf /var/lib/apt/lists/* /tmp/*
 
 WORKDIR /app
 
